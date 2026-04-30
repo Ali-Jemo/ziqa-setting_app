@@ -174,6 +174,14 @@ impl CosmicFlags for Args {
     }
 }
 
+pub fn sidebar_icon(name: &str) -> std::borrow::Cow<'static, str> {
+    std::borrow::Cow::Owned(format!(
+        "{}/../sidebar-new-icons/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    ))
+}
+
 /// # Errors
 ///
 /// Returns error if iced fails to run the application.

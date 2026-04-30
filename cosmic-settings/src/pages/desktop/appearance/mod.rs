@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub mod commands;
+pub mod cursor_themes;
 pub mod drawer;
 pub mod font_config;
 pub mod icon_themes;
@@ -40,6 +41,7 @@ pub enum ContextView {
     ApplicationBackground,
     ContainerBackground,
     ControlComponent,
+    CursorTheme,
     #[cfg(feature = "cosmic-comp-config")]
     ShadowAndCorners,
     CustomAccent,
@@ -129,6 +131,7 @@ pub enum Message {
     DrawerColor(ColorPickerUpdate),
     #[cfg(feature = "cosmic-comp-config")]
     DrawerCorners(drawer::CornerMessage),
+    DrawerCursor(drawer::CursorMessage),
     DrawerFont(drawer::FontMessage),
     DrawerIcon(drawer::IconMessage),
 
@@ -156,7 +159,17 @@ pub enum Message {
     StartImport,
     UseDefaultWindowHint(bool),
     WindowHintSize(u32),
+    WindowManagement(WindowManagementMessage),
     Daytime(bool),
+}
+
+#[derive(Debug, Clone)]
+pub enum WindowManagementMessage {
+    GtkTheme(String),
+    ReloadGtk,
+    ResetAppearance,
+    Accessibility,
+    DarkLightToggle,
 }
 
 impl From<Message> for crate::app::Message {
@@ -543,6 +556,52 @@ impl Page {
                 return Task::none();
             }
 
+            Message::DrawerCursor(message) => {
+                if let Some(context_view) = self.context_view.as_ref() {
+                    tasks.push(self.drawer.update_cursor(message, context_view));
+                }
+            }
+
+            Message::WindowManagement(wm_message) => match wm_message {
+                WindowManagementMessage::GtkTheme(_theme) => {
+                    if let Ok(config) = CosmicTk::config() {
+                        // Set GTK theme for legacy applications
+                        let _ = config.set("gtk-theme-name", "Adwaita");
+                        tracing::info!("GTK theme set to Adwaita");
+                    }
+                }
+                WindowManagementMessage::ReloadGtk => {
+                    // Reload GTK settings
+                    tokio::task::spawn(async {
+                        let _ = tokio::process::Command::new("gtk-update-icon-cache")
+                            .arg("-f")
+                            .arg("/usr/share/icons/default/index.theme")
+                            .spawn();
+                        let _ = tokio::process::Command::new("gtk-update-icon-cache")
+                            .arg("-f")
+                            .arg("/usr/share/icons/Adwaita/index.theme")
+                            .spawn();
+                        tracing::info!("GTK icon cache updated");
+                    });
+                }
+                WindowManagementMessage::ResetAppearance => {
+                    // Reset all appearance settings
+                    // TODO: implement
+                }
+                WindowManagementMessage::Accessibility => {
+                    // Open accessibility settings
+                    // TODO: implement
+                }
+                WindowManagementMessage::DarkLightToggle => {
+                    let enabled = !self.theme_manager.mode().is_dark;
+                    if let Err(err) = self.theme_manager.dark_mode(enabled) {
+                        tracing::error!(?err, "Error setting dark mode");
+                    }
+                    self.drawer.reset(&self.theme_manager);
+                    theme_staged = Some(theme_manager::ThemeStaged::Current);
+                }
+            }
+
             Message::ThemeModeUpdate(mode) => {
                 let was_dark = self.theme_manager.mode().is_dark;
                 let was_auto = self.theme_manager.mode().auto_switch;
@@ -702,6 +761,7 @@ impl page::Page<crate::pages::Message> for Page {
             sections.insert(style::section()),
             sections.insert(interface_density()),
             sections.insert(window_management()),
+            sections.insert(tools_section()),
             sections.insert(experimental()),
             sections.insert(reset_button()),
         ])
@@ -923,3 +983,159 @@ pub fn reset_button() -> Section<crate::pages::Message> {
         })
 }
 impl page::AutoBind<crate::pages::Message> for Page {}
+
+fn appearance_tool_tile<'a>(
+    title: impl Into<std::borrow::Cow<'a, str>>,
+    description: impl Into<std::borrow::Cow<'a, str>>,
+    icon_name: impl Into<std::borrow::Cow<'a, str>>,
+    message: Message,
+) -> widget::button::Button<'a, Message> {
+    let title = title.into();
+    let description = description.into();
+    let icon_name = icon_name.into();
+    let spacing = cosmic::theme::spacing();
+
+    let icon = if icon_name.contains('/') {
+        widget::icon::icon(widget::icon::from_path(std::path::PathBuf::from(
+            icon_name.into_owned(),
+        )))
+    } else {
+        widget::icon::from_name(icon_name.into_owned()).into()
+    };
+
+    widget::button::custom(
+        widget::container(
+            widget::column::with_capacity(3)
+                .push(
+                    widget::row::with_capacity(2)
+                        .push(
+                            widget::container(icon.size(24))
+                                .padding(8)
+                                .class(cosmic::theme::Container::Secondary),
+                        )
+                        .push(
+                            widget::text::heading(title)
+                                .width(Length::Fill)
+                                .class(cosmic::theme::Text::Default),
+                        )
+                        .align_y(Alignment::Center)
+                        .spacing(spacing.space_s),
+                )
+                .push(
+                    widget::text::body(description)
+                        .class(cosmic::theme::Text::Default)
+                        .width(Length::Fill),
+                )
+                .spacing(spacing.space_xs),
+        )
+        .padding(spacing.space_m)
+        .width(Length::Fill),
+    )
+    .on_press(message)
+    .class(cosmic::theme::Button::Transparent)
+}
+
+pub fn tools_section() -> Section<crate::pages::Message> {
+    Section::default()
+        .title(fl!("tools"))
+        .view::<Page>(move |_binder, _page, section| {
+            let spacing = cosmic::theme::spacing().space_s;
+
+            Element::from(
+                widget::settings::section()
+                    .title(&section.title)
+                    .add(
+                        widget::row::with_capacity(2)
+                            .push(
+                                appearance_tool_tile(
+                                    fl!("gtk-theme"),
+                                    "Configure GTK theme for legacy applications",
+                                    crate::sidebar_icon("desktop.svg"),
+                                    Message::WindowManagement(WindowManagementMessage::GtkTheme(
+                                        String::new(),
+                                    )),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .push(
+                                appearance_tool_tile(
+                                    fl!("cursor-theme"),
+                                    fl!("cursor-theme", "desc"),
+                                    crate::sidebar_icon("input.svg"),
+                                    Message::DrawerOpen(ContextView::CursorTheme),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .spacing(spacing),
+                    )
+                    .add(
+                        widget::row::with_capacity(2)
+                            .push(
+                                appearance_tool_tile(
+                                    "Reload GTK",
+                                    "Reload GTK settings and icon cache",
+                                    "view-refresh-symbolic",
+                                    Message::WindowManagement(WindowManagementMessage::ReloadGtk),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .push(
+                                appearance_tool_tile(
+                                    "Dark/Light Toggle",
+                                    "Switch between dark and light themes",
+                                    crate::sidebar_icon("wallpaper.svg"),
+                                    Message::WindowManagement(WindowManagementMessage::DarkLightToggle),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .spacing(spacing),
+                    )
+                    .add(
+                        widget::row::with_capacity(2)
+                            .push(
+                                appearance_tool_tile(
+                                    fl!("icon-theme"),
+                                    fl!("icon-theme", "desc"),
+                                    crate::sidebar_icon("applications.svg"),
+                                    Message::DrawerOpen(ContextView::IconsAndToolkit),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .push(
+                                appearance_tool_tile(
+                                    fl!("interface-font"),
+                                    "Manage system fonts",
+                                    "preferences-desktop-font-symbolic",
+                                    Message::DrawerOpen(ContextView::SystemFont),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .spacing(spacing),
+                    )
+                    .add(
+                        widget::row::with_capacity(2)
+                            .push(
+                                appearance_tool_tile(
+                                    "Reset Appearance",
+                                    "Reset all appearance settings to defaults",
+                                    "edit-delete-symbolic",
+                                    Message::WindowManagement(WindowManagementMessage::ResetAppearance),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .push(
+                                appearance_tool_tile(
+                                    "Accessibility",
+                                    "Open accessibility settings",
+                                    crate::sidebar_icon("accessibility.svg"),
+                                    Message::WindowManagement(WindowManagementMessage::Accessibility),
+                                )
+                                .width(Length::FillPortion(1)),
+                            )
+                            .spacing(spacing),
+                    )
+                    .apply(Element::from)
+                    .map(crate::pages::Message::Appearance),
+            )
+        })
+}

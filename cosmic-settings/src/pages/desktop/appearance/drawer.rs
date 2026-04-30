@@ -17,6 +17,7 @@ use crate::widget::color_picker_context_view;
 
 use super::{
     ContextView, Message, font_config, icon_themes,
+    cursor_themes::CursorThemes,
     icon_themes::{IconHandles, IconThemes},
     theme_manager,
 };
@@ -39,6 +40,13 @@ pub struct Content {
     icon_global: bool,
     icon_themes: IconThemes,
     icon_handles: IconHandles,
+
+    cursors_fetched: bool,
+    cursor_fetch_handle: Option<cosmic::iced::task::Handle>,
+    cursor_theme_active: Option<usize>,
+    cursor_themes: CursorThemes,
+    cursor_size: u32,
+
     tk_config: Option<Config>,
 
     comp_config: cosmic_config::Config,
@@ -52,6 +60,13 @@ pub enum CornerMessage {
     ClipFloating(bool),
     ClipTiled(bool),
     ShadowTiled(bool),
+}
+
+#[derive(Debug, Clone)]
+pub enum CursorMessage {
+    CursorLoaded(CursorThemes),
+    CursorTheme(usize),
+    CursorSize(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +143,13 @@ impl From<&theme_manager::Manager> for Content {
             icon_theme_active: None,
             icon_themes: Vec::new(),
             icon_handles: Vec::new(),
+            cursors_fetched: false,
+            cursor_fetch_handle: None,
+            cursor_theme_active: None,
+            cursor_themes: Vec::new(),
+            cursor_size: CosmicTk::config().ok()
+                .and_then(|c| c.get::<u32>("cursor_size").ok())
+                .unwrap_or(24),
             tk_config: CosmicTk::config().ok(),
             comp_config,
             #[cfg(feature = "cosmic-comp-config")]
@@ -211,6 +233,42 @@ impl Content {
         });
 
         needs_update
+    }
+
+    pub fn update_cursor(
+        &mut self,
+        message: CursorMessage,
+        _context_view: &ContextView,
+    ) -> Task<app::Message> {
+        match message {
+            CursorMessage::CursorTheme(id) => {
+                if let Some(theme) = self.cursor_themes.get(id).cloned() {
+                    self.cursor_theme_active = Some(id);
+
+                    if let Some(ref config) = self.tk_config {
+                        _ = config.set::<String>("gtk-cursor-theme-name", theme.id);
+                    }
+                }
+            }
+            CursorMessage::CursorSize(size) => {
+                self.cursor_size = size;
+                if let Some(ref config) = self.tk_config {
+                    _ = config.set::<u32>("cursor_size", size);
+                }
+            }
+            CursorMessage::CursorLoaded(cursor_themes) => {
+                let active_cursor_theme = self.tk_config.as_ref()
+                    .and_then(|c| c.get::<String>("gtk-cursor-theme-name").ok())
+                    .unwrap_or_else(|| "default".to_string());
+
+                self.cursor_themes = cursor_themes;
+                self.cursor_theme_active = self
+                    .cursor_themes
+                    .iter()
+                    .position(|theme| theme.id == active_cursor_theme);
+            }
+        }
+        Task::none()
     }
 
     pub fn update_icon(
@@ -298,6 +356,17 @@ impl Content {
 
                 return task;
             }
+            ContextView::CursorTheme => {
+                if self.cursors_fetched {
+                    return Task::none();
+                }
+
+                self.cursors_fetched = true;
+                 let (task, handle) = cosmic::task::future(super::cursor_themes::fetch()).abortable();
+                self.cursor_fetch_handle = Some(handle);
+
+                return task;
+            }
             ContextView::MonospaceFont | ContextView::SystemFont => {
                 self.font_config.reset();
             }
@@ -308,6 +377,9 @@ impl Content {
 
     pub fn on_leave(&mut self) -> Task<crate::pages::Message> {
         if let Some(handle) = self.icon_fetch_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.cursor_fetch_handle.take() {
             handle.abort();
         }
         Task::none()
@@ -470,12 +542,77 @@ impl Content {
                 crate::pages::Message::CloseContextDrawer,
             ),
 
+            ContextView::CursorTheme => context_drawer(
+                self.cursor_theme_view(),
+                crate::pages::Message::CloseContextDrawer,
+            )
+            .title(fl!("cursor-theme")),
+
             #[cfg(feature = "cosmic-comp-config")]
             ContextView::ShadowAndCorners => context_drawer(
                 self.shadow_and_corners(),
                 crate::pages::Message::CloseContextDrawer,
             ),
         })
+    }
+
+    pub fn cursor_theme_view(&self) -> Element<'_, crate::pages::Message> {
+        let Spacing {
+            space_xxs,
+            space_xs,
+            space_m,
+            ..
+        } = cosmic::theme::spacing();
+
+        let active = self.cursor_theme_active;
+
+        cosmic::iced::widget::column![
+            // Cursor size
+            settings::section().add(
+                settings::item::builder(fl!("cursor-theme", "size")).flex_control(
+                    cosmic::widget::row::with_capacity(2)
+                        .align_y(cosmic::iced::Alignment::Center)
+                        .spacing(space_xs)
+                        .push(
+                            text::body(format!("{}", self.cursor_size))
+                                .width(Length::Fixed(22.0))
+                                .align_x(cosmic::iced::Alignment::Center),
+                        )
+                        .push(
+                            widget::slider(24..=64, self.cursor_size, |size| {
+                                Message::DrawerCursor(CursorMessage::CursorSize(size))
+                            })
+                            .width(Length::Fill)
+                        )
+                )
+            ),
+            // Cursor theme previews
+            widget::column::with_children([
+                text::heading(fl!("cursor-theme")).into(),
+                flex_row(
+                    self.cursor_themes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, theme)| {
+                            let selected = active.map(|j| i == j).unwrap_or_default();
+                             super::cursor_themes::button(&theme.name, i, selected, |id| {
+                                 Message::DrawerCursor(CursorMessage::CursorTheme(id))
+                             })
+                        })
+                        .collect(),
+                )
+                .row_spacing(space_xs)
+                .column_spacing(space_xs)
+                .apply(container)
+                .center_x(Length::Fill)
+                .into()
+            ])
+            .spacing(space_xxs)
+        ]
+        .spacing(space_m)
+        .width(Length::Fill)
+        .apply(Element::from)
+        .map(crate::pages::Message::Appearance)
     }
 
     pub fn icons_and_toolkit(&self) -> Element<'_, crate::pages::Message> {

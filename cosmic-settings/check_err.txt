@@ -1,0 +1,30 @@
+    Blocking waiting for file lock on build directory
+warning: function `network_page_list_item` is never used
+   --> cosmic-settings/src/pages/networking/mod.rs:619:4
+    |
+619 | fn network_page_list_item<'a, Message: 'static + Clone>(
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: fields `uid`, `gid`, `home_directory`, `shell`, and `groups` are never read
+  --> cosmic-settings/src/pages/system/users/mod.rs:51:5
+   |
+41 | pub struct User {
+   |            ---- fields in this struct
+...
+51 |     uid: u64,
+   |     ^^^
+52 |     gid: u64,
+   |     ^^^
+53 |     home_directory: String,
+   |     ^^^^^^^^^^^^^^
+54 |     shell: String,
+   |     ^^^^^
+55 |     groups: Vec<String>,
+   |     ^^^^^^
+   |
+   = note: `User` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: `cosmic-settings` (bin "cosmic-settings") generated 2 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 59.74s
